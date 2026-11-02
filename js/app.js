@@ -1,6 +1,7 @@
 /**
  * CitoLab Master Application Controller
- * Gestiona el flujo del juego, la interacción cromosómica, el sistema anti-adivinanza y el informe final.
+ * Gestiona el flujo del juego, estado persistente entre pasos, navegación anterior/siguiente,
+ * interactividad táctil (arrastrar, soltar, pulsar) y estética diferenciada Mitosis vs Meiosis.
  */
 
 class CitoLabApp {
@@ -11,6 +12,11 @@ class CitoLabApp {
         this.score = 0;
         this.maxPossibleScore = 1400;
         
+        // Historial persistente para mantener lo ya realizado al ir atrás
+        this.stepHistory = {}; // Clave: `${mIdx}_${sIdx}` => { completed: true, ... }
+        this.furthestMissionIdx = 0;
+        this.furthestStepIdx = 0;
+
         // Competencias diagnósticas (0 a 100%)
         this.competencies = {
             cycle_and_replication: { name: 'Ciclo Celular y Replicación del ADN', total: 0, passed: 0, hints: 0, reviews: [] },
@@ -20,7 +26,7 @@ class CitoLabApp {
             cytological_diagnosis: { name: 'Diagnóstico Forense y Anomalías', total: 0, passed: 0, hints: 0, reviews: [] }
         };
 
-        // Estado interactivo temporal para pasos dinámicos
+        // Estado interactivo temporal para el paso en curso
         this.stepState = {};
 
         // Elementos DOM
@@ -51,6 +57,11 @@ class CitoLabApp {
         this.dom.finalReportModal = document.getElementById('finalReportModal');
         this.dom.reportContainer = document.getElementById('reportContainer');
         this.dom.btnPrevStep = document.getElementById('btnPrevStep');
+        this.dom.btnNextStep = document.getElementById('btnNextStep');
+        this.dom.stepProgressBadge = document.getElementById('stepProgressBadge');
+        this.dom.divisionTypeIndicator = document.getElementById('divisionTypeIndicator');
+        this.dom.divisionTypeTitle = document.getElementById('divisionTypeTitle');
+        this.dom.divisionTypePloidy = document.getElementById('divisionTypePloidy');
     }
 
     bindEvents() {
@@ -59,6 +70,13 @@ class CitoLabApp {
                 this.goToPreviousStep();
             });
         }
+
+        if (this.dom.btnNextStep) {
+            this.dom.btnNextStep.addEventListener('click', () => {
+                this.goToNextStep();
+            });
+        }
+
         if (this.dom.audioToggleBtn) {
             this.dom.audioToggleBtn.addEventListener('click', () => {
                 const enabled = window.labAudio.toggle();
@@ -82,6 +100,22 @@ class CitoLabApp {
         }
     }
 
+    getStepKey() {
+        return `${this.currentMissionIdx}_${this.currentStepIdx}`;
+    }
+
+    isCurrentStepCompleted() {
+        const key = this.getStepKey();
+        return !!(this.stepHistory[key] && this.stepHistory[key].completed);
+    }
+
+    canGoNext() {
+        if (this.isCurrentStepCompleted()) return true;
+        if (this.currentMissionIdx < this.furthestMissionIdx) return true;
+        if (this.currentMissionIdx === this.furthestMissionIdx && this.currentStepIdx < this.furthestStepIdx) return true;
+        return false;
+    }
+
     goToPreviousStep() {
         window.labAudio.playClick();
         if (this.currentStepIdx > 0) {
@@ -95,6 +129,41 @@ class CitoLabApp {
         }
     }
 
+    goToNextStep() {
+        if (!this.canGoNext()) return;
+        window.labAudio.playClick();
+        const mission = this.getCurrentMission();
+        if (this.currentStepIdx < mission.steps.length - 1) {
+            this.currentStepIdx++;
+            this.renderMission();
+        } else if (this.currentMissionIdx < this.missions.length - 1) {
+            this.currentMissionIdx++;
+            this.currentStepIdx = 0;
+            this.renderMission();
+        } else {
+            this.showFinalReport();
+        }
+    }
+
+    markCurrentStepCompleted(data = {}) {
+        const key = this.getStepKey();
+        this.stepHistory[key] = {
+            completed: true,
+            ...data
+        };
+
+        if (this.currentMissionIdx > this.furthestMissionIdx) {
+            this.furthestMissionIdx = this.currentMissionIdx;
+            this.furthestStepIdx = this.currentStepIdx;
+        } else if (this.currentMissionIdx === this.furthestMissionIdx) {
+            if (this.currentStepIdx > this.furthestStepIdx) {
+                this.furthestStepIdx = this.currentStepIdx;
+            }
+        }
+
+        this.updateHUD();
+    }
+
     getCurrentMission() {
         return this.missions[this.currentMissionIdx];
     }
@@ -104,22 +173,48 @@ class CitoLabApp {
         return mission ? mission.steps[this.currentStepIdx] : null;
     }
 
+    updateTheme() {
+        const mission = this.getCurrentMission();
+        if (!mission) return;
+
+        if (mission.divisionType === 'mitosis') {
+            document.body.className = 'theme-mitosis';
+            if (this.dom.divisionTypeTitle) this.dom.divisionTypeTitle.textContent = '🔬 DIVISIÓN SOMÁTICA • MITOSIS';
+            if (this.dom.divisionTypePloidy) this.dom.divisionTypePloidy.textContent = 'Conservación Diploide (2n → 2n)';
+        } else if (mission.divisionType === 'meiosis') {
+            document.body.className = 'theme-meiosis';
+            if (this.dom.divisionTypeTitle) this.dom.divisionTypeTitle.textContent = '⚡ DIVISIÓN REDUCCIONAL • MEIOSIS';
+            if (this.dom.divisionTypePloidy) this.dom.divisionTypePloidy.textContent = 'Reducción y Variabilidad (2n → 4 células n)';
+        } else if (mission.divisionType === 'forensic') {
+            document.body.className = 'theme-forensic';
+            if (this.dom.divisionTypeTitle) this.dom.divisionTypeTitle.textContent = '⚠️ LABORATORIO FORENSE CITOLÓGICO';
+            if (this.dom.divisionTypePloidy) this.dom.divisionTypePloidy.textContent = 'Diagnóstico Clínico y Anomalías';
+        }
+    }
+
     updateHUD() {
         const mission = this.getCurrentMission();
         if (!mission) return;
+
+        this.updateTheme();
 
         this.dom.moduleBadge.textContent = mission.badge;
         this.dom.missionTitle.textContent = mission.title;
         this.dom.missionSubtitle.textContent = mission.subtitle;
         this.dom.scoreVal.textContent = this.score;
 
-        // Calcular porcentaje global de avance
+        if (this.dom.stepProgressBadge) {
+            this.dom.stepProgressBadge.textContent = `Paso ${this.currentStepIdx + 1} de ${mission.steps.length}`;
+        }
+
+        // Progreso global
         let totalSteps = 0;
         let completedSteps = 0;
         this.missions.forEach((m, mIdx) => {
             m.steps.forEach((s, sIdx) => {
                 totalSteps++;
-                if (mIdx < this.currentMissionIdx || (mIdx === this.currentMissionIdx && sIdx <= this.currentStepIdx)) {
+                const k = `${mIdx}_${sIdx}`;
+                if (this.stepHistory[k]?.completed) {
                     completedSteps++;
                 }
             });
@@ -132,6 +227,10 @@ class CitoLabApp {
         if (this.dom.btnPrevStep) {
             this.dom.btnPrevStep.disabled = (this.currentMissionIdx === 0 && this.currentStepIdx === 0);
         }
+
+        if (this.dom.btnNextStep) {
+            this.dom.btnNextStep.disabled = !this.canGoNext();
+        }
     }
 
     renderMission() {
@@ -143,7 +242,6 @@ class CitoLabApp {
 
         const step = this.getCurrentStep();
         if (!step) {
-            // Avanzar a siguiente misión
             this.currentMissionIdx++;
             this.currentStepIdx = 0;
             this.renderMission();
@@ -152,7 +250,15 @@ class CitoLabApp {
 
         this.updateHUD();
         this.feedbackAreaClear();
-        this.stepState = { hintsUsed: 0, selectedOption: null, selectedReason: null };
+
+        const stepKey = this.getStepKey();
+        const savedState = this.stepHistory[stepKey];
+
+        this.stepState = {
+            hintsUsed: 0,
+            selectedOption: savedState ? savedState.selectedOption : null,
+            selectedReason: savedState ? savedState.selectedReason : null
+        };
 
         // Renderizar según tipo de paso
         switch (step.type) {
@@ -161,22 +267,31 @@ class CitoLabApp {
             case 'forensic_case_2':
             case 'matrix_comparison':
             case 'interactive_segregation_check':
-                this.renderPredictAndReason(step);
+                this.renderPredictAndReason(step, savedState);
                 break;
             case 'interactive_replication':
-                this.renderInteractiveReplication(step);
+                this.renderInteractiveReplication(step, savedState);
                 break;
             case 'order_phases':
-                this.renderOrderPhases(step);
+                this.renderOrderPhases(step, savedState);
                 break;
             case 'interactive_metaphase_plate':
-                this.renderMetaphasePlate(step);
+                this.renderMetaphasePlate(step, savedState);
                 break;
-            case 'crossing_over_interactive':
-                this.renderCrossingOver(step);
+            case 'interactive_mitosis_anaphase_drag':
+                this.renderMitosisAnaphaseDrag(step, savedState);
+                break;
+            case 'synapsis_pairing':
+                this.renderSynapsisPairing(step, savedState);
+                break;
+            case 'interactive_meiosis1_anaphase_drag':
+                this.renderMeiosis1AnaphaseDrag(step, savedState);
                 break;
             case 'interactive_gamete_inspector':
-                this.renderGameteInspector(step);
+                this.renderGameteInspector(step, savedState);
+                break;
+            case 'interactive_forensic_sorter':
+                this.renderForensicSorter(step, savedState);
                 break;
             default:
                 console.warn('Unknown step type:', step.type);
@@ -199,32 +314,45 @@ class CitoLabApp {
     }
 
     // ==========================================================
-    // RENDERIZADOR: PREDECIR Y RAZONAR (ANTI-ADIVINANZA DE 2 NIVELES)
+    // RENDERIZADOR: PREDECIR Y RAZONAR (CON ESTADO GUARDADO)
     // ==========================================================
-    renderPredictAndReason(step) {
+    renderPredictAndReason(step, savedState = null) {
         this.dom.panelInstruction.innerHTML = `<strong>Instrucción Científica:</strong> ${step.instruction}`;
         this.renderMicroscopeVisual(step.visualState);
 
+        const isCompleted = savedState && savedState.completed;
         const letters = ['A', 'B', 'C', 'D'];
-        // Barajamos aleatoriamente las opciones para evitar patrones de posición fija
-        const shuffledOptions = [...step.options].sort(() => Math.random() - 0.5);
+        
+        // Si ya estaba completado, mantenemos el orden previo o mostramos tal cual
+        let optionsList = step.options;
+        if (!isCompleted) {
+            optionsList = [...step.options].sort(() => Math.random() - 0.5);
+        }
 
-        let optionsHtml = shuffledOptions.map((opt, idx) => `
-            <button class="choice-btn" data-id="${opt.id}">
-                <span class="choice-letter">${letters[idx]}</span>
-                <span class="choice-text">${opt.text}</span>
-            </button>
-        `).join('');
+        let optionsHtml = optionsList.map((opt, idx) => {
+            const isSelected = savedState && savedState.selectedOption === opt.id;
+            return `
+                <button class="choice-btn ${isSelected ? 'selected' : ''}" data-id="${opt.id}" ${isCompleted ? 'disabled style="cursor:default"' : ''}>
+                    <span class="choice-letter">${letters[idx]}</span>
+                    <span class="choice-text">${opt.text}</span>
+                </button>
+            `;
+        }).join('');
 
-        // Barajamos aleatoriamente las justificaciones científicas
-        const shuffledReasonings = [...step.reasoningOptions].sort(() => Math.random() - 0.5);
+        let reasoningsList = step.reasoningOptions;
+        if (!isCompleted) {
+            reasoningsList = [...step.reasoningOptions].sort(() => Math.random() - 0.5);
+        }
 
-        let reasoningsHtml = shuffledReasonings.map((r, idx) => `
-            <button class="choice-btn reason-btn" data-id="${r.id}">
-                <span class="choice-letter">R${idx + 1}</span>
-                <span class="choice-text">${r.text}</span>
-            </button>
-        `).join('');
+        let reasoningsHtml = reasoningsList.map((r, idx) => {
+            const isSelected = savedState && savedState.selectedReason === r.id;
+            return `
+                <button class="choice-btn reason-btn ${isSelected ? 'selected' : ''}" data-id="${r.id}" ${isCompleted ? 'disabled style="cursor:default"' : ''}>
+                    <span class="choice-letter">R${idx + 1}</span>
+                    <span class="choice-text">${r.text}</span>
+                </button>
+            `;
+        }).join('');
 
         this.dom.interactionArea.innerHTML = `
             <div class="two-tier-container">
@@ -236,7 +364,7 @@ class CitoLabApp {
                     </div>
                 </div>
 
-                <div class="tier-section hidden" id="reasoningTier">
+                <div class="tier-section ${isCompleted ? '' : 'hidden'}" id="reasoningTier">
                     <div class="tier-label">Nivel 2: Justificación Científica Obligatoria</div>
                     <div class="question-text">${step.reasoningPrompt}</div>
                     <div class="choices-list" id="reasoningChoices">
@@ -246,12 +374,25 @@ class CitoLabApp {
             </div>
         `;
 
+        if (isCompleted) {
+            this.showFeedback(
+                `<strong>¡Paso ya superado con rigor biológico!</strong><br>${step.options.find(o => o.id === step.correctOption).text}`,
+                true
+            );
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+            `;
+            document.getElementById('nextStepBtn').addEventListener('click', () => {
+                this.goToNextStep();
+            });
+            return;
+        }
+
         this.dom.actionButtons.innerHTML = `
             <button class="btn btn-hint" id="requestHintBtn">💡 Solicitar Pista (-20 pts)</button>
             <button class="btn btn-primary" id="validateHypothesisBtn" disabled>🔬 Validar Hipótesis</button>
         `;
 
-        // Lógica de interacción en opciones
         const primaryBtns = document.querySelectorAll('#primaryChoices .choice-btn');
         const reasoningTier = document.getElementById('reasoningTier');
         const reasoningBtns = document.querySelectorAll('#reasoningChoices .reason-btn');
@@ -265,7 +406,6 @@ class CitoLabApp {
                 btn.classList.add('selected');
                 this.stepState.selectedOption = btn.dataset.id;
                 reasoningTier.classList.remove('hidden');
-                validateBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             });
         });
 
@@ -301,7 +441,11 @@ class CitoLabApp {
             const earnedPoints = Math.max(50, 100 - (this.stepState.hintsUsed * 30));
             this.score += earnedPoints;
             comp.passed++;
-            this.updateHUD();
+
+            this.markCurrentStepCompleted({
+                selectedOption: this.stepState.selectedOption,
+                selectedReason: this.stepState.selectedReason
+            });
 
             this.showFeedback(
                 `<strong>¡Hipótesis y razonamiento científicamente impecables!</strong> (+${earnedPoints} pts)<br>${step.options.find(o => o.id === step.correctOption).text}`,
@@ -309,12 +453,10 @@ class CitoLabApp {
             );
 
             this.dom.actionButtons.innerHTML = `
-                <button class="btn btn-primary btn-pulse" id="nextStepBtn">➡️ Continuar Investigación</button>
+                <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
             `;
             document.getElementById('nextStepBtn').addEventListener('click', () => {
-                window.labAudio.playClick();
-                this.currentStepIdx++;
-                this.renderMission();
+                this.goToNextStep();
             });
 
         } else {
@@ -322,20 +464,10 @@ class CitoLabApp {
             this.score = Math.max(0, this.score - 15);
             this.updateHUD();
 
-            let errorDesc = '';
-            if (!isOptionCorrect && !isReasonCorrect) {
-                errorDesc = 'Tanto la predicción seleccionada como el razonamiento contienen discrepancias con el modelo celular.';
-            } else if (!isOptionCorrect) {
-                errorDesc = 'La justificación tiene base, pero la predicción cuantitativa o estructural no concuerda con la célula 2n = 4.';
-            } else {
-                errorDesc = 'Has seleccionado la respuesta adecuada, pero el fundamento científico elegido no es el correcto. ¡Evita deducciones sin base biológica!';
+            let errorDesc = 'La hipótesis o la justificación científica seleccionada contiene discrepancias con el modelo celular.';
+            if (isOptionCorrect && !isReasonCorrect) {
+                errorDesc = 'Has acertado la opción, pero la justificación elegida no es el fundamento biológico real. ¡Evita el azar!';
             }
-
-            const compKey = mission.competencyKey;
-            if (!comp.reviews.includes(step.instruction)) {
-                comp.reviews.push(`${step.instruction}: ${step.hint1}`);
-            }
-
             this.showFeedback(errorDesc, false, step.hint1);
         }
     }
@@ -346,31 +478,26 @@ class CitoLabApp {
         this.competencies[mission.competencyKey].hints++;
         window.labAudio.playClick();
 
-        let hintMsg = '';
-        if (this.stepState.hintsUsed === 1) {
-            hintMsg = `[Pista 1/2] ${step.hint1}`;
-            this.score = Math.max(0, this.score - 20);
-        } else {
-            hintMsg = `[Pista 2/2] ${step.hint2}`;
-            this.score = Math.max(0, this.score - 30);
-        }
+        let hintMsg = (this.stepState.hintsUsed === 1) ? `[Pista 1/2] ${step.hint1}` : `[Pista 2/2] ${step.hint2}`;
+        this.score = Math.max(0, this.score - 20);
         this.updateHUD();
         this.showFeedback('Pista activada por el sistema:', false, hintMsg);
     }
 
     // ==========================================================
-    // RENDERIZADOR: REPLICACIÓN INTERACTIVA DE ADN (FASE S)
+    // RENDERIZADOR: REPLICACIÓN INTERACTIVA (FASE S)
     // ==========================================================
-    renderInteractiveReplication(step) {
+    renderInteractiveReplication(step, savedState = null) {
         this.dom.panelInstruction.innerHTML = `<strong>Acción de Laboratorio:</strong> ${step.instruction}`;
-        this.stepState.replicatedCount = 0;
-        this.stepState.replicatedStatus = [false, false, false, false];
+        const isCompleted = savedState && savedState.completed;
+
+        this.stepState.replicatedCount = isCompleted ? 4 : 0;
+        this.stepState.replicatedStatus = isCompleted ? [true, true, true, true] : [false, false, false, false];
 
         const renderSvg = () => {
             const svgContent = `
                 <svg viewBox="0 0 540 360" class="microscope-svg">
                     ${CellGraphics.createCellBase(540, 360, { showNuclearEnvelope: true, centriolePosition: 'together' })}
-                    <!-- 4 cromosomas en interfase G1 / S interactivos -->
                     <g id="chromatinTargets">
                         ${this.renderInterphaseStrand(0, 180, 140, 75, CellColors.pair1Paternal, 'Par 1 Pat')}
                         ${this.renderInterphaseStrand(1, 360, 140, 75, CellColors.pair1Maternal, 'Par 1 Mat')}
@@ -381,21 +508,22 @@ class CitoLabApp {
             `;
             this.dom.microscopeStage.innerHTML = svgContent;
 
-            // Enlazar clics en cromosomas
-            for (let i = 0; i < 4; i++) {
-                const el = document.getElementById(`strand-${i}`);
-                if (el) {
-                    el.addEventListener('click', () => {
-                        if (!this.stepState.replicatedStatus[i]) {
-                            this.stepState.replicatedStatus[i] = true;
-                            this.stepState.replicatedCount++;
-                            window.labAudio.playSnap();
-                            this.score += 25;
-                            this.updateHUD();
-                            renderSvg();
-                            this.checkReplicationFinished(step);
-                        }
-                    });
+            if (!isCompleted) {
+                for (let i = 0; i < 4; i++) {
+                    const el = document.getElementById(`strand-${i}`);
+                    if (el) {
+                        el.addEventListener('click', () => {
+                            if (!this.stepState.replicatedStatus[i]) {
+                                this.stepState.replicatedStatus[i] = true;
+                                this.stepState.replicatedCount++;
+                                window.labAudio.playSnap();
+                                this.score += 25;
+                                this.updateHUD();
+                                renderSvg();
+                                this.checkReplicationFinished(step);
+                            }
+                        });
+                    }
                 }
             }
         };
@@ -408,13 +536,21 @@ class CitoLabApp {
                     <span class="status-title">Cromátidas Replicadas por ADN Polimerasa:</span>
                     <span class="status-counter" id="replCounter">${this.stepState.replicatedCount} / 4</span>
                 </div>
-                <p class="status-guide">Haz clic en cada uno de los 4 filamentos de cromatina en el microscopio para activar la horquilla de replicación.</p>
+                <p class="status-guide">${isCompleted ? '✔ Replicación completada: 4 cromosomas duplicados.' : 'Pulsa sobre cada uno de los 4 filamentos de cromatina en el microscopio para activar la ADN polimerasa.'}</p>
             </div>
         `;
 
-        this.dom.actionButtons.innerHTML = `
-            <button class="btn btn-primary" id="continueReplBtn" disabled>Replicación Incompleta</button>
-        `;
+        if (isCompleted) {
+            this.showFeedback(step.feedbackCompleted, true);
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+            `;
+            document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+        } else {
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary" id="continueReplBtn" disabled>Replicación Incompleta</button>
+            `;
+        }
     }
 
     renderInterphaseStrand(index, x, y, length, color, label) {
@@ -428,10 +564,10 @@ class CitoLabApp {
             `;
         } else {
             return `
-                <g id="strand-${index}" class="clickable-strand pulse-strand" style="cursor: pointer">
+                <g id="strand-${index}" class="clickable-strand pulse-strand clickable-interactive-item">
                     ${CellGraphics.createSimpleChromatid(x, y, length, color, 0, null, `simp-${index}`)}
-                    <circle cx="${x}" cy="${y}" r="22" fill="none" stroke="#38bdf8" stroke-dasharray="3,3" class="target-ring" />
-                    <text x="${x}" y="${y + length / 2 + 16}" fill="#94a3b8" font-size="10" text-anchor="middle">${label} (Simple)</text>
+                    <circle cx="${x}" cy="${y}" r="24" fill="none" stroke="#38bdf8" stroke-dasharray="3,3" class="target-ring" />
+                    <text x="${x}" y="${y + length / 2 + 16}" fill="#94a3b8" font-size="10" text-anchor="middle">${label} (Tocar para replicar)</text>
                 </g>
             `;
         }
@@ -444,18 +580,15 @@ class CitoLabApp {
         if (this.stepState.replicatedCount >= 4) {
             window.labAudio.playSuccess();
             this.competencies.cycle_and_replication.passed++;
+            this.markCurrentStepCompleted();
             this.showFeedback(step.feedbackCompleted, true);
 
             const btn = document.getElementById('continueReplBtn');
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '➡️ Fase G2 Verificada: Proceder';
+                btn.textContent = 'Siguiente Paso ➡️';
                 btn.classList.add('btn-pulse');
-                btn.addEventListener('click', () => {
-                    window.labAudio.playClick();
-                    this.currentStepIdx++;
-                    this.renderMission();
-                });
+                btn.addEventListener('click', () => this.goToNextStep());
             }
         }
     }
@@ -463,15 +596,15 @@ class CitoLabApp {
     // ==========================================================
     // RENDERIZADOR: ORDENAR FASES (MITOSIS)
     // ==========================================================
-    renderOrderPhases(step) {
+    renderOrderPhases(step, savedState = null) {
         this.dom.panelInstruction.innerHTML = `<strong>Secuencia Citoesquelética:</strong> ${step.instruction}`;
         this.renderMicroscopeVisual('mitosis_sequence_overview');
 
-        // Fases desordenadas deliberadamente
-        const shuffled = [step.phases[1], step.phases[3], step.phases[0], step.phases[2]];
+        const isCompleted = savedState && savedState.completed;
+        const phasesList = isCompleted ? step.phases : [step.phases[1], step.phases[3], step.phases[0], step.phases[2]];
 
-        let cardsHtml = shuffled.map(p => `
-            <div class="phase-order-card" data-id="${p.id}" draggable="true">
+        let cardsHtml = phasesList.map(p => `
+            <div class="phase-order-card" data-id="${p.id}" ${isCompleted ? '' : 'draggable="true"'}>
                 <div class="order-handle">☰</div>
                 <div class="order-info">
                     <strong class="phase-name">${p.name}</strong>
@@ -485,53 +618,45 @@ class CitoLabApp {
             <div class="order-board" id="orderBoard">
                 ${cardsHtml}
             </div>
-            <div class="order-instructions">Arrastra o pulsa en las tarjetas para colocarlas en el orden secuencial correcto (1.º arriba, 4.º abajo).</div>
+            <div class="order-instructions">${isCompleted ? '✔ Secuencia ordenada y validada.' : 'Arrastra las tarjetas para colocarlas en el orden secuencial correcto (1.º arriba, 4.º abajo).'}</div>
         `;
+
+        if (isCompleted) {
+            this.showFeedback('<strong>Secuencia mitótica superada:</strong> Profase ➔ Metafase ➔ Anafase ➔ Telofase.', true);
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+            `;
+            document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+            return;
+        }
 
         this.dom.actionButtons.innerHTML = `
             <button class="btn btn-hint" id="requestHintBtn">💡 Solicitar Pista (-20 pts)</button>
             <button class="btn btn-primary" id="verifyOrderBtn">🔬 Comprobar Secuencia Mitótica</button>
         `;
 
-        // Activar Drag & Drop nativo y ordenación mediante clics alternativos
         this.initOrderBoardInteraction();
 
-        document.getElementById('requestHintBtn').addEventListener('click', () => {
-            this.handleHintRequest(step);
-        });
-
+        document.getElementById('requestHintBtn').addEventListener('click', () => this.handleHintRequest(step));
         document.getElementById('verifyOrderBtn').addEventListener('click', () => {
-            const currentOrder = Array.from(document.querySelectorAll('#orderBoard .phase-order-card'))
-                .map(el => el.dataset.id);
-
+            const currentOrder = Array.from(document.querySelectorAll('#orderBoard .phase-order-card')).map(el => el.dataset.id);
             const isCorrect = JSON.stringify(currentOrder) === JSON.stringify(step.correctOrder);
             if (isCorrect) {
                 window.labAudio.playSuccess();
                 this.score += 100;
                 this.competencies.mitosis_mechanics.passed++;
-                this.updateHUD();
-                this.showFeedback(
-                    '<strong>¡Secuencia mitótica validada correctamente!</strong><br>Profase (condensación) ➔ Metafase (placa ecuatorial) ➔ Anafase (separación de cromátidas) ➔ Telofase (reconstrucción nuclear).',
-                    true
-                );
+                this.markCurrentStepCompleted();
+                this.showFeedback('<strong>¡Secuencia mitótica validada!</strong> Profase ➔ Metafase ➔ Anafase ➔ Telofase.', true);
 
                 this.dom.actionButtons.innerHTML = `
-                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">➡️ Iniciar Placa Metafásica</button>
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
                 `;
-                document.getElementById('nextStepBtn').addEventListener('click', () => {
-                    window.labAudio.playClick();
-                    this.currentStepIdx++;
-                    this.renderMission();
-                });
+                document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
             } else {
                 window.labAudio.playError();
                 this.score = Math.max(0, this.score - 15);
                 this.updateHUD();
-                this.showFeedback(
-                    'La secuencia cromosómica es incorrecta. Si se produjera la anafase antes de la metafase, los cromosomas no estarían alineados y se producirían rupturas letales.',
-                    false,
-                    step.hint1
-                );
+                this.showFeedback('La secuencia cromosómica es incorrecta. Piensa en la mnemotecnia: PROMETO a ANA TEJER.', false, step.hint1);
             }
         });
     }
@@ -545,7 +670,6 @@ class CitoLabApp {
                 draggedItem = card;
                 setTimeout(() => card.classList.add('dragging'), 0);
             });
-
             card.addEventListener('dragend', () => {
                 draggedItem = null;
                 card.classList.remove('dragging');
@@ -579,17 +703,20 @@ class CitoLabApp {
     }
 
     // ==========================================================
-    // RENDERIZADOR: PLACA METAFÁSICA MITÓTICA (ALINEACIÓN INDIVIDUAL)
+    // RENDERIZADOR: PLACA METAFÁSICA MITÓTICA (INTERACTIVA)
     // ==========================================================
-    renderMetaphasePlate(step) {
+    renderMetaphasePlate(step, savedState = null) {
         this.dom.panelInstruction.innerHTML = `<strong>Alineación Cinetocórica:</strong> ${step.instruction}`;
-        this.stepState.placedSlots = [false, false, false, false];
+        const isCompleted = savedState && savedState.completed;
+
         this.stepState.activeChromosomes = [
             { id: 0, length: 75, color: CellColors.pair1Paternal, name: 'Par 1 Pat' },
             { id: 1, length: 75, color: CellColors.pair1Maternal, name: 'Par 1 Mat' },
             { id: 2, length: 48, color: CellColors.pair2Paternal, name: 'Par 2 Pat' },
             { id: 3, length: 48, color: CellColors.pair2Maternal, name: 'Par 2 Mat' }
         ];
+
+        this.stepState.placedSlots = isCompleted ? [...this.stepState.activeChromosomes] : [false, false, false, false];
 
         const renderSvg = () => {
             const ySlots = [80, 140, 200, 260];
@@ -623,22 +750,19 @@ class CitoLabApp {
 
         const renderButtons = () => {
             const available = this.stepState.activeChromosomes.filter(c => !this.stepState.placedSlots.includes(c));
-            if (available.length === 0) {
+            if (available.length === 0 || isCompleted) {
                 this.dom.interactionArea.innerHTML = `
                     <div class="interactive-status-box success-border">
-                        <div class="status-title">✅ ¡Los 4 cromosomas duplicados están alineados en la placa ecuatorial!</div>
+                        <div class="status-title">✅ ¡Los 4 cromosomas duplicados están alineados en fila india!</div>
                         <p class="status-guide">${step.checkExplanation}</p>
                     </div>
                 `;
                 this.dom.actionButtons.innerHTML = `
-                    <button class="btn btn-primary btn-pulse" id="verifyPlateBtn">🔬 Confirmar Alineación Ecuatorial</button>
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
                 `;
-                document.getElementById('verifyPlateBtn').addEventListener('click', () => {
-                    window.labAudio.playSuccess();
-                    this.score += 80;
-                    this.updateHUD();
-                    this.currentStepIdx++;
-                    this.renderMission();
+                document.getElementById('nextStepBtn').addEventListener('click', () => {
+                    this.markCurrentStepCompleted();
+                    this.goToNextStep();
                 });
                 return;
             }
@@ -652,7 +776,7 @@ class CitoLabApp {
 
             this.dom.interactionArea.innerHTML = `
                 <div class="interactive-status-box">
-                    <div class="status-guide">Pulsa sobre cada cromosoma para anclar sus cinetocoros al huso en la placa metafásica:</div>
+                    <div class="status-guide">Pulsa sobre cada cromosoma para anclar sus cinetocoros al ecuador:</div>
                     <div class="chrom-buttons-grid">${btnsHtml}</div>
                 </div>
             `;
@@ -676,50 +800,168 @@ class CitoLabApp {
     }
 
     // ==========================================================
-    // RENDERIZADOR: ENTRECRUZAMIENTO (CROSSING-OVER EN MEIOSIS I)
+    // RENDERIZADOR: ANAFASE MITÓTICA (ARRASTRAR CROMÁTIDAS A LOS POLOS)
     // ==========================================================
-    renderCrossingOver(step) {
-        this.dom.panelInstruction.innerHTML = `<strong>Recombinación Homóloga:</strong> ${step.instruction}`;
-        this.stepState.chiasma1Done = false;
-        this.stepState.chiasma2Done = false;
+    renderMitosisAnaphaseDrag(step, savedState = null) {
+        this.dom.panelInstruction.innerHTML = `<strong>Acción de Laboratorio:</strong> ${step.instruction}`;
+        const isCompleted = savedState && savedState.completed;
+
+        this.stepState.leftPoleCount = isCompleted ? 4 : 0;
+        this.stepState.rightPoleCount = isCompleted ? 4 : 0;
+        this.stepState.chromatids = [
+            { id: 'c1', label: 'Cromátida 1P (Larga Azul)', color: CellColors.pair1Paternal, placed: isCompleted ? 'left' : null },
+            { id: 'c2', label: 'Cromátida 1P copia (Larga Azul)', color: CellColors.pair1Paternal, placed: isCompleted ? 'right' : null },
+            { id: 'c3', label: 'Cromátida 1M (Larga Roja)', color: CellColors.pair1Maternal, placed: isCompleted ? 'left' : null },
+            { id: 'c4', label: 'Cromátida 1M copia (Larga Roja)', color: CellColors.pair1Maternal, placed: isCompleted ? 'right' : null },
+            { id: 'c5', label: 'Cromátida 2P (Corta Verde)', color: CellColors.pair2Paternal, placed: isCompleted ? 'left' : null },
+            { id: 'c6', label: 'Cromátida 2P copia (Corta Verde)', color: CellColors.pair2Paternal, placed: isCompleted ? 'right' : null },
+            { id: 'c7', label: 'Cromátida 2M (Corta Naranja)', color: CellColors.pair2Maternal, placed: isCompleted ? 'left' : null },
+            { id: 'c8', label: 'Cromátida 2M copia (Corta Naranja)', color: CellColors.pair2Maternal, placed: isCompleted ? 'right' : null }
+        ];
+
+        const renderSvg = () => {
+            const width = 540, height = 340, cy = 170;
+            const leftItems = this.stepState.chromatids.filter(c => c.placed === 'left');
+            const rightItems = this.stepState.chromatids.filter(c => c.placed === 'right');
+            const unplaced = this.stepState.chromatids.filter(c => !c.placed);
+
+            let leftSvg = leftItems.map((c, i) => CellGraphics.createSimpleChromatid(120, 60 + i * 55, 60, c.color, 90)).join('');
+            let rightSvg = rightItems.map((c, i) => CellGraphics.createSimpleChromatid(420, 60 + i * 55, 60, c.color, -90)).join('');
+            let centerSvg = unplaced.map((c, i) => CellGraphics.createSimpleChromatid(270, 45 + i * 36, 50, c.color, 0)).join('');
+
+            this.dom.microscopeStage.innerHTML = `
+                <svg viewBox="0 0 ${width} ${height}" class="microscope-svg">
+                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
+                    ${leftSvg}
+                    ${centerSvg}
+                    ${rightSvg}
+                </svg>
+            `;
+        };
+
+        renderSvg();
+
+        const renderUI = () => {
+            const unplaced = this.stepState.chromatids.filter(c => !c.placed);
+            if (unplaced.length === 0 || isCompleted) {
+                this.dom.interactionArea.innerHTML = `
+                    <div class="interactive-status-box success-border">
+                        <div class="status-title">✅ ¡Anafase completada con éxito!</div>
+                        <p class="status-guide">4 cromátidas individuales han migrado a cada polo celular. Al descondensarse en telofase, cada nueva célula hija dispondrá de 2n = 4 cromosomas simples.</p>
+                    </div>
+                `;
+                this.dom.actionButtons.innerHTML = `
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+                `;
+                document.getElementById('nextStepBtn').addEventListener('click', () => {
+                    this.markCurrentStepCompleted();
+                    this.goToNextStep();
+                });
+                return;
+            }
+
+            let chromsHtml = unplaced.map(c => `
+                <div class="draggable-chrom-item" data-id="${c.id}" style="border-left: 5px solid ${c.color}">
+                    <span>${c.label}</span>
+                    <div>
+                        <button class="btn-header send-pole-btn" data-id="${c.id}" data-pole="left">👈 Polo Izq</button>
+                        <button class="btn-header send-pole-btn" data-id="${c.id}" data-pole="right">Polo Der 👉</button>
+                    </div>
+                </div>
+            `).join('');
+
+            this.dom.interactionArea.innerHTML = `
+                <div class="interactive-status-box">
+                    <div class="status-guide">Envía 4 cromátidas al Polo Izquierdo y 4 al Polo Derecho:</div>
+                    <div class="poles-container-grid">
+                        <div class="pole-dropzone">
+                            <span class="dropzone-title">Polo Izquierdo (${this.stepState.leftPoleCount} / 4)</span>
+                        </div>
+                        <div class="pole-dropzone">
+                            <span class="dropzone-title">Polo Derecho (${this.stepState.rightPoleCount} / 4)</span>
+                        </div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+                        ${chromsHtml}
+                    </div>
+                </div>
+            `;
+
+            document.querySelectorAll('.send-pole-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    const pole = btn.dataset.pole;
+                    const item = this.stepState.chromatids.find(c => c.id === id);
+
+                    if (pole === 'left' && this.stepState.leftPoleCount < 4) {
+                        item.placed = 'left';
+                        this.stepState.leftPoleCount++;
+                        window.labAudio.playSnap();
+                    } else if (pole === 'right' && this.stepState.rightPoleCount < 4) {
+                        item.placed = 'right';
+                        this.stepState.rightPoleCount++;
+                        window.labAudio.playSnap();
+                    }
+                    renderSvg();
+                    renderUI();
+                });
+            });
+        };
+
+        renderUI();
+    }
+
+    // ==========================================================
+    // RENDERIZADOR: SINAPSIS Y CROSSING-OVER (MEIOSIS I)
+    // ==========================================================
+    renderSynapsisPairing(step, savedState = null) {
+        this.dom.panelInstruction.innerHTML = `<strong>Mecánica Meiótica:</strong> ${step.instruction}`;
+        const isCompleted = savedState && savedState.completed;
+
+        this.stepState.pair1Done = isCompleted;
+        this.stepState.pair2Done = isCompleted;
+        this.stepState.chiasma1Done = isCompleted;
+        this.stepState.chiasma2Done = isCompleted;
 
         const renderSvg = () => {
             const svgContent = `
                 <svg viewBox="0 0 540 340" class="microscope-svg">
                     ${CellGraphics.createCellBase(540, 340, { showNuclearEnvelope: true, nuclearEnvelopeDissolving: true, centriolePosition: 'poles' })}
                     
-                    <!-- Tétrada Par 1 (Grande) -->
+                    <!-- Bivalente 1 (Grande) -->
                     <g transform="translate(180, 160)">
                         <text x="0" y="-75" fill="#f8fafc" font-size="11" text-anchor="middle" font-weight="bold">Bivalente 1 (Homólogos Grandes)</text>
-                        ${CellGraphics.createDuplicatedChromosome(-20, 0, 80, CellColors.pair1Paternal, 0, this.stepState.chiasma1Done ? { sister2: CellColors.pair1Maternal } : null, 't1-p')}
-                        ${CellGraphics.createDuplicatedChromosome(20, 0, 80, CellColors.pair1Maternal, 0, this.stepState.chiasma1Done ? { sister1: CellColors.pair1Paternal } : null, 't1-m')}
+                        ${CellGraphics.createDuplicatedChromosome(this.stepState.pair1Done ? -20 : -45, 0, 80, CellColors.pair1Paternal, 0, this.stepState.chiasma1Done ? { sister2: CellColors.pair1Maternal } : null, 't1-p')}
+                        ${CellGraphics.createDuplicatedChromosome(this.stepState.pair1Done ? 20 : 45, 0, 80, CellColors.pair1Maternal, 0, this.stepState.chiasma1Done ? { sister1: CellColors.pair1Paternal } : null, 't1-m')}
                         
-                        ${!this.stepState.chiasma1Done ? `
+                        ${this.stepState.pair1Done && !this.stepState.chiasma1Done ? `
                             <g class="chiasma-trigger" id="chiasma1Btn" cursor="pointer">
-                                <circle cx="0" cy="22" r="14" fill="rgba(244, 63, 94, 0.3)" stroke="#f43f5e" stroke-dasharray="3,3" />
+                                <circle cx="0" cy="22" r="14" fill="rgba(244, 63, 94, 0.4)" stroke="#f43f5e" stroke-dasharray="3,3" />
                                 <text x="0" y="26" fill="#fff" font-size="9" text-anchor="middle">Quiasma 1</text>
                             </g>
-                        ` : `
+                        ` : ''}
+                        ${this.stepState.chiasma1Done ? `
                             <circle cx="0" cy="22" r="6" fill="#10b981" />
                             <text x="0" y="38" fill="#34d399" font-size="9" text-anchor="middle">✔ Recombinado</text>
-                        `}
+                        ` : ''}
                     </g>
 
-                    <!-- Tétrada Par 2 (Pequeño) -->
+                    <!-- Bivalente 2 (Pequeño) -->
                     <g transform="translate(370, 160)">
                         <text x="0" y="-60" fill="#f8fafc" font-size="11" text-anchor="middle" font-weight="bold">Bivalente 2 (Homólogos Pequeños)</text>
-                        ${CellGraphics.createDuplicatedChromosome(-18, 0, 52, CellColors.pair2Paternal, 0, this.stepState.chiasma2Done ? { sister2: CellColors.pair2Maternal } : null, 't2-p')}
-                        ${CellGraphics.createDuplicatedChromosome(18, 0, 52, CellColors.pair2Maternal, 0, this.stepState.chiasma2Done ? { sister1: CellColors.pair2Paternal } : null, 't2-m')}
+                        ${CellGraphics.createDuplicatedChromosome(this.stepState.pair2Done ? -18 : -40, 0, 52, CellColors.pair2Paternal, 0, this.stepState.chiasma2Done ? { sister2: CellColors.pair2Maternal } : null, 't2-p')}
+                        ${CellGraphics.createDuplicatedChromosome(this.stepState.pair2Done ? 18 : 40, 0, 52, CellColors.pair2Maternal, 0, this.stepState.chiasma2Done ? { sister1: CellColors.pair2Paternal } : null, 't2-m')}
                         
-                        ${!this.stepState.chiasma2Done ? `
+                        ${this.stepState.pair2Done && !this.stepState.chiasma2Done ? `
                             <g class="chiasma-trigger" id="chiasma2Btn" cursor="pointer">
-                                <circle cx="0" cy="14" r="13" fill="rgba(245, 158, 11, 0.3)" stroke="#f59e0b" stroke-dasharray="3,3" />
+                                <circle cx="0" cy="14" r="13" fill="rgba(245, 158, 11, 0.4)" stroke="#f59e0b" stroke-dasharray="3,3" />
                                 <text x="0" y="18" fill="#fff" font-size="9" text-anchor="middle">Quiasma 2</text>
                             </g>
-                        ` : `
+                        ` : ''}
+                        ${this.stepState.chiasma2Done ? `
                             <circle cx="0" cy="14" r="6" fill="#10b981" />
                             <text x="0" y="30" fill="#34d399" font-size="9" text-anchor="middle">✔ Recombinado</text>
-                        `}
+                        ` : ''}
                     </g>
                 </svg>
             `;
@@ -754,42 +996,194 @@ class CitoLabApp {
             if (this.stepState.chiasma1Done && this.stepState.chiasma2Done) {
                 window.labAudio.playSuccess();
                 this.competencies.meiosis_1_reduction.passed++;
-                this.showFeedback(
-                    `<strong>¡Sobrecruzamiento génico completado con éxito!</strong><br>${step.educationalNote}`,
-                    true
-                );
-
+                this.markCurrentStepCompleted();
+                this.showFeedback('<strong>¡Sinapsis y recombinación génica completadas!</strong> Las cromátidas ahora poseen combinaciones alélicas mosaico.', true);
                 this.dom.actionButtons.innerHTML = `
-                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">➡️ Proceder a Metafase I</button>
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
                 `;
-                document.getElementById('nextStepBtn').addEventListener('click', () => {
-                    window.labAudio.playClick();
-                    this.currentStepIdx++;
-                    this.renderMission();
-                });
+                document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
             }
         };
 
         renderSvg();
 
-        this.dom.interactionArea.innerHTML = `
-            <div class="interactive-status-box">
-                <div class="status-guide">${step.subInstruction}</div>
-                <div class="note-box">${step.educationalNote}</div>
-            </div>
-        `;
+        const renderUI = () => {
+            if (isCompleted || (this.stepState.chiasma1Done && this.stepState.chiasma2Done)) {
+                this.dom.interactionArea.innerHTML = `
+                    <div class="interactive-status-box success-border">
+                        <div class="status-title">✅ ¡Bivalentes emparejados y recombinados!</div>
+                        <p class="status-guide">${step.educationalNote}</p>
+                    </div>
+                `;
+                this.dom.actionButtons.innerHTML = `
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+                `;
+                document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+                return;
+            }
 
-        this.dom.actionButtons.innerHTML = `
-            <button class="btn btn-primary" disabled>Intercambio Genético en Curso...</button>
-        `;
+            this.dom.interactionArea.innerHTML = `
+                <div class="interactive-status-box">
+                    <div class="status-guide">Fase 1: Pulsa para emparejar los homólogos en tétradas (Sinapsis):</div>
+                    <div class="synapsis-pair-box">
+                        <div class="synapsis-item ${this.stepState.pair1Done ? 'paired' : ''}" id="pair1Action">
+                            <strong>Par 1: Emparejar Homólogo Grande Azul y Rojo</strong>
+                            <span>${this.stepState.pair1Done ? '✔ Bivalente 1 Formado' : '👉 Tocar para unir'}</span>
+                        </div>
+                        <div class="synapsis-item ${this.stepState.pair2Done ? 'paired' : ''}" id="pair2Action">
+                            <strong>Par 2: Emparejar Homólogo Pequeño Verde y Naranja</strong>
+                            <span>${this.stepState.pair2Done ? '✔ Bivalente 2 Formado' : '👉 Tocar para unir'}</span>
+                        </div>
+                    </div>
+                    <div class="note-box" style="margin-top:10px;">
+                        Fase 2: Una vez unidos, pulsa en los <strong>Quiasmas</strong> que aparecen en el microscopio para activar el sobrecruzamiento.
+                    </div>
+                </div>
+            `;
+
+            const p1 = document.getElementById('pair1Action');
+            if (p1) {
+                p1.addEventListener('click', () => {
+                    if (!this.stepState.pair1Done) {
+                        this.stepState.pair1Done = true;
+                        window.labAudio.playSnap();
+                        renderSvg();
+                        renderUI();
+                    }
+                });
+            }
+
+            const p2 = document.getElementById('pair2Action');
+            if (p2) {
+                p2.addEventListener('click', () => {
+                    if (!this.stepState.pair2Done) {
+                        this.stepState.pair2Done = true;
+                        window.labAudio.playSnap();
+                        renderSvg();
+                        renderUI();
+                    }
+                });
+            }
+        };
+
+        renderUI();
+    }
+
+    // ==========================================================
+    // RENDERIZADOR: ANAFASE I MEIÓTICA (ARRASTRAR HOMÓLOGOS COMPLETOS)
+    // ==========================================================
+    renderMeiosis1AnaphaseDrag(step, savedState = null) {
+        this.dom.panelInstruction.innerHTML = `<strong>Acción de Laboratorio:</strong> ${step.instruction}`;
+        const isCompleted = savedState && savedState.completed;
+
+        this.stepState.leftItems = isCompleted ? 2 : 0;
+        this.stepState.rightItems = isCompleted ? 2 : 0;
+        this.stepState.chromosomes = [
+            { id: 'h1', label: 'Cromosoma Doble Par 1 (Grande Paterno)', length: 75, color: CellColors.pair1Paternal, placed: isCompleted ? 'left' : null },
+            { id: 'h2', label: 'Cromosoma Doble Par 1 (Grande Materno)', length: 75, color: CellColors.pair1Maternal, placed: isCompleted ? 'right' : null },
+            { id: 'h3', label: 'Cromosoma Doble Par 2 (Pequeño Paterno)', length: 48, color: CellColors.pair2Paternal, placed: isCompleted ? 'left' : null },
+            { id: 'h4', label: 'Cromosoma Doble Par 2 (Pequeño Materno)', length: 48, color: CellColors.pair2Maternal, placed: isCompleted ? 'right' : null }
+        ];
+
+        const renderSvg = () => {
+            const width = 540, height = 340;
+            const leftC = this.stepState.chromosomes.filter(c => c.placed === 'left');
+            const rightC = this.stepState.chromosomes.filter(c => c.placed === 'right');
+            const centerC = this.stepState.chromosomes.filter(c => !c.placed);
+
+            let leftSvg = leftC.map((c, i) => CellGraphics.createDuplicatedChromosome(130, 110 + i * 110, c.length, c.color, 90)).join('');
+            let rightSvg = rightC.map((c, i) => CellGraphics.createDuplicatedChromosome(410, 110 + i * 110, c.length, c.color, -90)).join('');
+            let centerSvg = centerC.map((c, i) => CellGraphics.createDuplicatedChromosome(270, 70 + i * 70, c.length, c.color, 0)).join('');
+
+            this.dom.microscopeStage.innerHTML = `
+                <svg viewBox="0 0 ${width} ${height}" class="microscope-svg">
+                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
+                    ${leftSvg}
+                    ${centerSvg}
+                    ${rightSvg}
+                </svg>
+            `;
+        };
+
+        renderSvg();
+
+        const renderUI = () => {
+            const unplaced = this.stepState.chromosomes.filter(c => !c.placed);
+            if (unplaced.length === 0 || isCompleted) {
+                this.dom.interactionArea.innerHTML = `
+                    <div class="interactive-status-box success-border">
+                        <div class="status-title">✅ ¡Disyunción meiótica completada!</div>
+                        <p class="status-guide">${step.checkExplanation}</p>
+                    </div>
+                `;
+                this.dom.actionButtons.innerHTML = `
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+                `;
+                document.getElementById('nextStepBtn').addEventListener('click', () => {
+                    this.markCurrentStepCompleted();
+                    this.goToNextStep();
+                });
+                return;
+            }
+
+            let btnsHtml = unplaced.map(c => `
+                <div class="draggable-chrom-item" data-id="${c.id}" style="border-left: 5px solid ${c.color}">
+                    <span>${c.label}</span>
+                    <div>
+                        <button class="btn-header send-pole-btn" data-id="${c.id}" data-pole="left">👈 Polo Izq</button>
+                        <button class="btn-header send-pole-btn" data-id="${c.id}" data-pole="right">Polo Der 👉</button>
+                    </div>
+                </div>
+            `).join('');
+
+            this.dom.interactionArea.innerHTML = `
+                <div class="interactive-status-box">
+                    <div class="status-guide">Reparte 1 cromosoma de cada par a cada polo:</div>
+                    <div class="poles-container-grid">
+                        <div class="pole-dropzone">
+                            <span class="dropzone-title">Polo Izquierdo (${this.stepState.leftItems} / 2 cromosomas)</span>
+                        </div>
+                        <div class="pole-dropzone">
+                            <span class="dropzone-title">Polo Derecho (${this.stepState.rightItems} / 2 cromosomas)</span>
+                        </div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+                        ${btnsHtml}
+                    </div>
+                </div>
+            `;
+
+            document.querySelectorAll('.send-pole-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    const pole = btn.dataset.pole;
+                    const item = this.stepState.chromosomes.find(c => c.id === id);
+
+                    if (pole === 'left' && this.stepState.leftItems < 2) {
+                        item.placed = 'left';
+                        this.stepState.leftItems++;
+                        window.labAudio.playSnap();
+                    } else if (pole === 'right' && this.stepState.rightItems < 2) {
+                        item.placed = 'right';
+                        this.stepState.rightItems++;
+                        window.labAudio.playSnap();
+                    }
+                    renderSvg();
+                    renderUI();
+                });
+            });
+        };
+
+        renderUI();
     }
 
     // ==========================================================
     // RENDERIZADOR: INSPECCIÓN DE GAMETOS RESULTANTES (MEIOSIS II)
     // ==========================================================
-    renderGameteInspector(step) {
+    renderGameteInspector(step, savedState = null) {
         this.dom.panelInstruction.innerHTML = `<strong>Inspección de Variabilidad Genética:</strong> ${step.instruction}`;
-        this.stepState.inspected = [false, false, false, false];
+        const isCompleted = savedState && savedState.completed;
+        this.stepState.inspected = isCompleted ? [true, true, true, true] : [false, false, false, false];
 
         const gameteConfigs = [
             { id: 0, label: 'Gameto 1', long: CellColors.pair1Paternal, longRecomb: null, short: CellColors.pair2Paternal, shortRecomb: null },
@@ -809,52 +1203,47 @@ class CitoLabApp {
             let gametesSvg = gameteConfigs.map((g, i) => {
                 const pos = positions[i];
                 const isInspected = this.stepState.inspected[i];
-                const strokeColor = isInspected ? '#10b981' : '#38bdf8';
+                const strokeColor = isInspected ? '#10b981' : '#d946ef';
 
                 return `
                     <g transform="translate(${pos.x}, ${pos.y})" class="gamete-cell-group" id="gamete-${i}" style="cursor: pointer">
-                        <!-- Membrana celular haploide -->
                         <ellipse cx="0" cy="0" rx="85" ry="55" fill="rgba(15, 23, 42, 0.85)" stroke="${strokeColor}" stroke-width="${isInspected ? 3 : 1.8}" stroke-dasharray="${isInspected ? 'none' : '4,4'}" />
-                        <!-- Envoltura nuclear haploide -->
                         <ellipse cx="0" cy="0" rx="60" ry="38" fill="rgba(147, 51, 234, 0.08)" stroke="rgba(168, 85, 247, 0.4)" stroke-width="1.2" />
-                        
-                        <!-- Cromosomas simples (n = 2) -->
                         ${CellGraphics.createSimpleChromatid(-20, 0, 48, g.long, -10, g.longRecomb)}
                         ${CellGraphics.createSimpleChromatid(20, 0, 32, g.short, 12, g.shortRecomb)}
-
-                        <text x="0" y="48" fill="${isInspected ? '#34d399' : '#94a3b8'}" font-size="10" text-anchor="middle" font-weight="bold">
+                        <text x="0" y="48" fill="${isInspected ? '#34d399' : '#f0abfc'}" font-size="10" text-anchor="middle" font-weight="bold">
                             ${g.label} (n = 2) ${isInspected ? '✔' : ''}
                         </text>
                     </g>
                 `;
             }).join('');
 
-            const svgContent = `
+            this.dom.microscopeStage.innerHTML = `
                 <svg viewBox="0 0 540 340" class="microscope-svg">
                     <rect x="0" y="0" width="540" height="340" fill="#090d16" />
-                    <!-- Cuadrantes de Petri -->
-                    <line x1="270" y1="20" x2="270" y2="320" stroke="rgba(148, 163, 184, 0.15)" stroke-width="1" />
-                    <line x1="20" y1="175" x2="520" y2="175" stroke="rgba(148, 163, 184, 0.15)" stroke-width="1" />
+                    <line x1="270" y1="20" x2="270" y2="320" stroke="rgba(217, 70, 239, 0.2)" stroke-width="1" />
+                    <line x1="20" y1="175" x2="520" y2="175" stroke="rgba(217, 70, 239, 0.2)" stroke-width="1" />
                     ${gametesSvg}
                 </svg>
             `;
-            this.dom.microscopeStage.innerHTML = svgContent;
 
-            gameteConfigs.forEach((g, i) => {
-                const el = document.getElementById(`gamete-${i}`);
-                if (el) {
-                    el.addEventListener('click', () => {
-                        if (!this.stepState.inspected[i]) {
-                            this.stepState.inspected[i] = true;
-                            window.labAudio.playSnap();
-                            this.score += 20;
-                            this.updateHUD();
-                            renderSvg();
-                            checkAllInspected();
-                        }
-                    });
-                }
-            });
+            if (!isCompleted) {
+                gameteConfigs.forEach((g, i) => {
+                    const el = document.getElementById(`gamete-${i}`);
+                    if (el) {
+                        el.addEventListener('click', () => {
+                            if (!this.stepState.inspected[i]) {
+                                this.stepState.inspected[i] = true;
+                                window.labAudio.playSnap();
+                                this.score += 20;
+                                this.updateHUD();
+                                renderSvg();
+                                checkAllInspected();
+                            }
+                        });
+                    }
+                });
+            }
         };
 
         const checkAllInspected = () => {
@@ -862,16 +1251,13 @@ class CitoLabApp {
             if (allChecked) {
                 window.labAudio.playSuccess();
                 this.competencies.meiosis_2_gametes.passed++;
+                this.markCurrentStepCompleted();
                 this.showFeedback(step.feedbackCompleted, true);
 
                 this.dom.actionButtons.innerHTML = `
-                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">➡️ Proceder al Laboratorio Forense (Reto Final)</button>
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
                 `;
-                document.getElementById('nextStepBtn').addEventListener('click', () => {
-                    window.labAudio.playClick();
-                    this.currentStepIdx++;
-                    this.renderMission();
-                });
+                document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
             }
         };
 
@@ -886,13 +1272,116 @@ class CitoLabApp {
             </div>
         `;
 
-        this.dom.actionButtons.innerHTML = `
-            <button class="btn btn-primary" disabled>Inspecciona los 4 Gametos en el Visor</button>
-        `;
+        if (isCompleted) {
+            this.showFeedback(step.feedbackCompleted, true);
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+            `;
+            document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+        } else {
+            this.dom.actionButtons.innerHTML = `
+                <button class="btn btn-primary" disabled>Inspecciona los 4 Gametos en el Visor</button>
+            `;
+        }
     }
 
     // ==========================================================
-    // RENDERIZADO VISUAL DEL MICROSCOPIO SEGÚN ESTADO
+    // RENDERIZADOR: CLASIFICADOR FORENSE (ARRASTRAR TARJETAS)
+    // ==========================================================
+    renderForensicSorter(step, savedState = null) {
+        this.dom.panelInstruction.innerHTML = `<strong>Análisis de Laboratorio:</strong> ${step.instruction}`;
+        const isCompleted = savedState && savedState.completed;
+
+        this.stepState.placedSamples = isCompleted ? { s1: 'mitosis', s2: 'meiosis1', s3: 'aneuploidy' } : {};
+
+        const checkFinished = () => {
+            const allAssigned = step.samples.every(s => this.stepState.placedSamples[s.id]);
+            if (allAssigned) {
+                const allCorrect = step.samples.every(s => this.stepState.placedSamples[s.id] === s.target);
+                if (allCorrect) {
+                    window.labAudio.playSuccess();
+                    this.score += 80;
+                    this.markCurrentStepCompleted();
+                    this.showFeedback(step.feedbackCompleted, true);
+                    this.dom.actionButtons.innerHTML = `
+                        <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+                    `;
+                    document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+                } else {
+                    window.labAudio.playError();
+                    this.showFeedback('Alguna muestra ha sido clasificada incorrectamente. Revisa la cantidad y tipo de cromosomas que migran a los polos.', false);
+                }
+            }
+        };
+
+        const renderUI = () => {
+            let traysHtml = step.trays.map(t => {
+                const assignedSample = step.samples.find(s => this.stepState.placedSamples[s.id] === t.id);
+                return `
+                    <div class="sorter-tray" data-tray="${t.id}">
+                        <strong style="color:#f59e0b">${t.name}</strong>
+                        <span style="font-size:0.75rem; color:#94a3b8">${t.desc}</span>
+                        ${assignedSample ? `
+                            <div class="sorter-card" style="border-color:#10b981; background:#0f291e">
+                                <strong>${assignedSample.title}</strong>
+                            </div>
+                        ` : `<div style="color:#64748b; font-style:italic; margin-top:8px;">(Bandeja vacía)</div>`}
+                    </div>
+                `;
+            }).join('');
+
+            const unplaced = step.samples.filter(s => !this.stepState.placedSamples[s.id]);
+            let samplesHtml = unplaced.map(s => `
+                <div class="sorter-card" data-id="${s.id}">
+                    <strong>${s.title}</strong>
+                    <p style="font-size:0.75rem; color:#cbd5e1; margin-top:4px;">${s.label}</p>
+                    <div style="margin-top:6px; display:flex; gap:6px;">
+                        <button class="btn-header sort-btn" data-id="${s.id}" data-target="mitosis">Mitosis</button>
+                        <button class="btn-header sort-btn" data-id="${s.id}" data-target="meiosis1">Meiosis I</button>
+                        <button class="btn-header sort-btn" data-id="${s.id}" data-target="aneuploidy">Aneuploidía</button>
+                    </div>
+                </div>
+            `).join('');
+
+            this.dom.interactionArea.innerHTML = `
+                <div class="interactive-status-box">
+                    <div class="status-guide">Asigna cada muestra citológica a su categoría biomédica:</div>
+                    <div class="sorter-trays-grid">
+                        ${traysHtml}
+                    </div>
+                    <div style="margin-top:14px; display:flex; flex-direction:column; gap:8px;">
+                        ${samplesHtml}
+                    </div>
+                </div>
+            `;
+
+            if (isCompleted) {
+                this.showFeedback(step.feedbackCompleted, true);
+                this.dom.actionButtons.innerHTML = `
+                    <button class="btn btn-primary btn-pulse" id="nextStepBtn">Siguiente Paso ➡️</button>
+                `;
+                document.getElementById('nextStepBtn').addEventListener('click', () => this.goToNextStep());
+                return;
+            }
+
+            document.querySelectorAll('.sort-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    const target = btn.dataset.target;
+                    this.stepState.placedSamples[id] = target;
+                    window.labAudio.playSnap();
+                    renderUI();
+                    checkFinished();
+                });
+            });
+        };
+
+        renderUI();
+        this.renderMicroscopeVisual('forensic_sample_alpha');
+    }
+
+    // ==========================================================
+    // RENDERIZADO VISUAL DEL MICROSCOPIO
     // ==========================================================
     renderMicroscopeVisual(state) {
         let svgBody = '';
@@ -905,7 +1394,6 @@ class CitoLabApp {
             case 'interphase_g1':
                 svgBody = `
                     ${CellGraphics.createCellBase(width, height, { showNuclearEnvelope: true, centriolePosition: 'together' })}
-                    <!-- 4 cromosomas simples y descondensados en G1 -->
                     ${CellGraphics.createSimpleChromatid(cx - 60, cy - 35, 75, CellColors.pair1Paternal, -15)}
                     ${CellGraphics.createSimpleChromatid(cx + 60, cy - 35, 75, CellColors.pair1Maternal, 20)}
                     ${CellGraphics.createSimpleChromatid(cx - 40, cy + 35, 48, CellColors.pair2Paternal, 35)}
@@ -927,13 +1415,10 @@ class CitoLabApp {
             case 'mitosis_anaphase_view':
                 svgBody = `
                     ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
-                    <!-- Cromátidas hermanas migrando a polos opuestos (4 a la izquierda, 4 a la derecha) -->
-                    <!-- Polo Izquierdo -->
                     ${CellGraphics.createSimpleChromatid(130, cy - 65, 70, CellColors.pair1Paternal, 90)}
                     ${CellGraphics.createSimpleChromatid(130, cy - 20, 70, CellColors.pair1Maternal, 90)}
                     ${CellGraphics.createSimpleChromatid(130, cy + 25, 45, CellColors.pair2Paternal, 90)}
                     ${CellGraphics.createSimpleChromatid(130, cy + 65, 45, CellColors.pair2Maternal, 90)}
-                    <!-- Polo Derecho -->
                     ${CellGraphics.createSimpleChromatid(width - 130, cy - 65, 70, CellColors.pair1Paternal, -90)}
                     ${CellGraphics.createSimpleChromatid(width - 130, cy - 20, 70, CellColors.pair1Maternal, -90)}
                     ${CellGraphics.createSimpleChromatid(width - 130, cy + 25, 45, CellColors.pair2Paternal, -90)}
@@ -944,12 +1429,9 @@ class CitoLabApp {
 
             case 'meiosis_metaphase_1_plate':
                 svgBody = `
-                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
-                    <!-- Tétradas alineadas en bivalentes en el ecuador (2 parejas de homólogos) -->
-                    <!-- Par 1 Grande -->
+                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles', membraneColor: CellColors.membraneMeiosis, membraneGlow: 'rgba(217, 70, 239, 0.4)' })}
                     ${CellGraphics.createDuplicatedChromosome(cx - 24, cy - 50, 75, CellColors.pair1Paternal, 90, { sister2: CellColors.pair1Maternal })}
                     ${CellGraphics.createDuplicatedChromosome(cx + 24, cy - 50, 75, CellColors.pair1Maternal, 90, { sister1: CellColors.pair1Paternal })}
-                    <!-- Par 2 Pequeño -->
                     ${CellGraphics.createDuplicatedChromosome(cx - 22, cy + 50, 50, CellColors.pair2Paternal, 90, { sister2: CellColors.pair2Maternal })}
                     ${CellGraphics.createDuplicatedChromosome(cx + 22, cy + 50, 50, CellColors.pair2Maternal, 90, { sister1: CellColors.pair2Paternal })}
                     <text x="${cx}" y="25" fill="#f43f5e" font-size="11" font-weight="bold" text-anchor="middle">Metafase I: Cromosomas Homólogos en Parejas (Bivalentes)</text>
@@ -959,28 +1441,26 @@ class CitoLabApp {
             case 'meiosis_1_products':
                 svgBody = `
                     <rect x="0" y="0" width="${width}" height="${height}" fill="#0b1120" />
-                    <!-- Dos células intermedias haploides n = 2 con cromosomas dobles -->
                     <g transform="translate(145, ${cy})">
-                        <ellipse cx="0" cy="0" rx="100" ry="80" fill="none" stroke="#38bdf8" stroke-width="2" />
+                        <ellipse cx="0" cy="0" rx="100" ry="80" fill="none" stroke="#d946ef" stroke-width="2" />
                         <ellipse cx="0" cy="0" rx="75" ry="55" fill="rgba(147, 51, 234, 0.1)" stroke="rgba(168, 85, 247, 0.5)" stroke-width="1.5" stroke-dasharray="4,4" />
                         ${CellGraphics.createDuplicatedChromosome(-22, 0, 68, CellColors.pair1Paternal, 15, { sister2: CellColors.pair1Maternal })}
                         ${CellGraphics.createDuplicatedChromosome(22, 0, 45, CellColors.pair2Maternal, -20, { sister1: CellColors.pair2Paternal })}
-                        <text x="0" y="68" fill="#38bdf8" font-size="10" text-anchor="middle">Célula A (n = 2 dobles)</text>
+                        <text x="0" y="68" fill="#f0abfc" font-size="10" text-anchor="middle">Célula A (n = 2 dobles)</text>
                     </g>
                     <g transform="translate(395, ${cy})">
-                        <ellipse cx="0" cy="0" rx="100" ry="80" fill="none" stroke="#38bdf8" stroke-width="2" />
+                        <ellipse cx="0" cy="0" rx="100" ry="80" fill="none" stroke="#d946ef" stroke-width="2" />
                         <ellipse cx="0" cy="0" rx="75" ry="55" fill="rgba(147, 51, 234, 0.1)" stroke="rgba(168, 85, 247, 0.5)" stroke-width="1.5" stroke-dasharray="4,4" />
                         ${CellGraphics.createDuplicatedChromosome(-22, 0, 68, CellColors.pair1Maternal, -15, { sister1: CellColors.pair1Paternal })}
                         ${CellGraphics.createDuplicatedChromosome(22, 0, 45, CellColors.pair2Paternal, 20, { sister2: CellColors.pair2Maternal })}
-                        <text x="0" y="68" fill="#38bdf8" font-size="10" text-anchor="middle">Célula B (n = 2 dobles)</text>
+                        <text x="0" y="68" fill="#f0abfc" font-size="10" text-anchor="middle">Célula B (n = 2 dobles)</text>
                     </g>
                 `;
                 break;
 
             case 'meiosis_2_scheme':
                 svgBody = `
-                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
-                    <!-- Metafase II: 2 cromosomas dobles en la placa de una célula ya haploide -->
+                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles', membraneColor: CellColors.membraneMeiosis, membraneGlow: 'rgba(217, 70, 239, 0.4)' })}
                     ${CellGraphics.createDuplicatedChromosome(cx, cy - 45, 75, CellColors.pair1Paternal, 90, { sister2: CellColors.pair1Maternal })}
                     ${CellGraphics.createDuplicatedChromosome(cx, cy + 45, 50, CellColors.pair2Maternal, 90, { sister1: CellColors.pair2Paternal })}
                     <text x="${cx}" y="25" fill="#facc15" font-size="11" font-weight="bold" text-anchor="middle">División Ecuacional sin replicación previa (n = 2)</text>
@@ -988,15 +1468,12 @@ class CitoLabApp {
                 break;
 
             case 'forensic_sample_alpha':
-                // Muestra Alfa: Anafase mitótica con 8 cromátidas viajando (4 a cada polo)
                 svgBody = `
                     ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
-                    <!-- Polo Izq -->
                     ${CellGraphics.createSimpleChromatid(125, cy - 60, 70, CellColors.pair1Paternal, 90)}
                     ${CellGraphics.createSimpleChromatid(125, cy - 20, 70, CellColors.pair1Maternal, 90)}
                     ${CellGraphics.createSimpleChromatid(125, cy + 20, 45, CellColors.pair2Paternal, 90)}
                     ${CellGraphics.createSimpleChromatid(125, cy + 60, 45, CellColors.pair2Maternal, 90)}
-                    <!-- Polo Der -->
                     ${CellGraphics.createSimpleChromatid(width - 125, cy - 60, 70, CellColors.pair1Paternal, -90)}
                     ${CellGraphics.createSimpleChromatid(width - 125, cy - 20, 70, CellColors.pair1Maternal, -90)}
                     ${CellGraphics.createSimpleChromatid(width - 125, cy + 20, 45, CellColors.pair2Paternal, -90)}
@@ -1006,16 +1483,12 @@ class CitoLabApp {
                 break;
 
             case 'forensic_sample_nondisjunction':
-                // No-disyunción en Meiosis I: ambos homólogos del Par 1 viajan juntos al polo izquierdo
                 svgBody = `
-                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles' })}
-                    <!-- Polo Izquierdo recibe 3 cromosomas dobles -->
+                    ${CellGraphics.createCellBase(width, height, { spindleFibersToPoles: true, centriolePosition: 'poles', membraneColor: '#f59e0b', membraneGlow: 'rgba(245, 158, 11, 0.4)' })}
                     ${CellGraphics.createDuplicatedChromosome(140, cy - 60, 70, CellColors.pair1Paternal, 90)}
                     ${CellGraphics.createDuplicatedChromosome(140, cy, 70, CellColors.pair1Maternal, 90)}
                     ${CellGraphics.createDuplicatedChromosome(140, cy + 60, 45, CellColors.pair2Paternal, 90)}
                     <text x="140" y="${cy + 105}" fill="#f87171" font-size="10" text-anchor="middle">Polo Izq: Recibe 3 cromosomas</text>
-                    
-                    <!-- Polo Derecho solo recibe 1 cromosoma doble -->
                     ${CellGraphics.createDuplicatedChromosome(width - 140, cy, 45, CellColors.pair2Maternal, -90)}
                     <text x="${width - 140}" y="${cy + 105}" fill="#f87171" font-size="10" text-anchor="middle">Polo Der: Recibe 1 cromosoma</text>
                     <text x="${cx}" y="25" fill="#f43f5e" font-size="12" font-weight="bold" text-anchor="middle">⚠️ ANOMALÍA: No-Disyunción de Homólogos del Par 1</text>
